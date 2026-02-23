@@ -1,5 +1,6 @@
 #![no_std]
 
+use soroban_sdk::token::TokenClient;
 use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Symbol};
 
 #[contracttype]
@@ -36,11 +37,36 @@ pub struct CreditLineEvent {
 #[contract]
 pub struct Credit;
 
+fn read_admin(env: &Env) -> Address {
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, "admin"))
+        .expect("Contract not initialized")
+}
+
+fn read_protocol_token(env: &Env) -> Address {
+    env.storage()
+        .instance()
+        .get(&Symbol::new(env, "token"))
+        .expect("Protocol token not set")
+}
+
 #[contractimpl]
 impl Credit {
     /// Initialize the contract (admin).
     pub fn init(env: Env, admin: Address) -> () {
-        env.storage().instance().set(&Symbol::new(&env, "admin"), &admin);
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, "admin"), &admin);
+        ()
+    }
+
+    /// Configure the protocol token contract (admin).
+    pub fn set_protocol_token(env: Env, token: Address) -> () {
+        read_admin(&env).require_auth();
+        env.storage()
+            .instance()
+            .set(&Symbol::new(&env, "token"), &token);
         ()
     }
 
@@ -62,9 +88,7 @@ impl Credit {
             status: CreditStatus::Active,
         };
 
-        env.storage()
-            .persistent()
-            .set(&borrower, &credit_line);
+        env.storage().persistent().set(&borrower, &credit_line);
 
         // Emit CreditLineOpened event
         env.events().publish(
@@ -88,8 +112,40 @@ impl Credit {
     }
 
     /// Repay credit (borrower).
-    pub fn repay_credit(_env: Env, _borrower: Address, _amount: i128) -> () {
-        // TODO: accept token, reduce utilized_amount, accrue interest
+    pub fn repay_credit(env: Env, borrower: Address, amount: i128) -> () {
+        if amount <= 0 {
+            panic!("Invalid repay amount");
+        }
+
+        borrower.require_auth();
+
+        let credit_line: CreditLineData = env
+            .storage()
+            .persistent()
+            .get(&borrower)
+            .expect("Credit line not found");
+
+        if credit_line.status == CreditStatus::Closed {
+            panic!("Credit line is closed");
+        }
+
+        let token = read_protocol_token(&env);
+        let token_client = TokenClient::new(&env, &token);
+
+        let contract_address = env.current_contract_address();
+        let allowance = token_client.allowance(&borrower, &contract_address);
+        if allowance < amount {
+            panic!("Insufficient allowance");
+        }
+
+        let balance = token_client.balance(&borrower);
+        if balance < amount {
+            panic!("Insufficient balance");
+        }
+
+        token_client.transfer_from(&contract_address, &borrower, &contract_address, &amount);
+
+        // TODO: reduce utilized_amount, accrue interest
         ()
     }
 
@@ -115,9 +171,7 @@ impl Credit {
             .expect("Credit line not found");
 
         credit_line.status = CreditStatus::Suspended;
-        env.storage()
-            .persistent()
-            .set(&borrower, &credit_line);
+        env.storage().persistent().set(&borrower, &credit_line);
 
         // Emit CreditLineSuspended event
         env.events().publish(
@@ -144,9 +198,7 @@ impl Credit {
             .expect("Credit line not found");
 
         credit_line.status = CreditStatus::Closed;
-        env.storage()
-            .persistent()
-            .set(&borrower, &credit_line);
+        env.storage().persistent().set(&borrower, &credit_line);
 
         // Emit CreditLineClosed event
         env.events().publish(
@@ -173,9 +225,7 @@ impl Credit {
             .expect("Credit line not found");
 
         credit_line.status = CreditStatus::Defaulted;
-        env.storage()
-            .persistent()
-            .set(&borrower, &credit_line);
+        env.storage().persistent().set(&borrower, &credit_line);
 
         // Emit CreditLineDefaulted event
         env.events().publish(
@@ -202,12 +252,13 @@ impl Credit {
 mod test {
     use super::*;
     use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::token::{StellarAssetClient, TokenClient};
 
     #[test]
     fn test_init_and_open_credit_line() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let admin = Address::generate(&env);
         let borrower = Address::generate(&env);
 
@@ -233,7 +284,7 @@ mod test {
     fn test_suspend_credit_line() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let admin = Address::generate(&env);
         let borrower = Address::generate(&env);
 
@@ -253,7 +304,7 @@ mod test {
     fn test_close_credit_line() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let admin = Address::generate(&env);
         let borrower = Address::generate(&env);
 
@@ -273,7 +324,7 @@ mod test {
     fn test_default_credit_line() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let admin = Address::generate(&env);
         let borrower = Address::generate(&env);
 
@@ -290,10 +341,46 @@ mod test {
     }
 
     #[test]
+    fn test_draw_credit_does_not_panic() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let borrower = Address::generate(&env);
+
+        let contract_id = env.register(Credit, ());
+        let client = CreditClient::new(&env, &contract_id);
+
+        client.init(&admin);
+        client.open_credit_line(&borrower, &1000_i128, &300_u32, &70_u32);
+        client.draw_credit(&borrower, &1_i128);
+
+        assert!(client.get_credit_line(&borrower).is_some());
+    }
+
+    #[test]
+    fn test_update_risk_parameters_does_not_panic() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let borrower = Address::generate(&env);
+
+        let contract_id = env.register(Credit, ());
+        let client = CreditClient::new(&env, &contract_id);
+
+        client.init(&admin);
+        client.open_credit_line(&borrower, &1000_i128, &300_u32, &70_u32);
+        client.update_risk_parameters(&borrower, &2000_i128, &500_u32, &85_u32);
+
+        assert!(client.get_credit_line(&borrower).is_some());
+    }
+
+    #[test]
     fn test_full_lifecycle() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let admin = Address::generate(&env);
         let borrower = Address::generate(&env);
 
@@ -322,7 +409,7 @@ mod test {
     fn test_event_data_integrity() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let admin = Address::generate(&env);
         let borrower = Address::generate(&env);
 
@@ -339,6 +426,80 @@ mod test {
         assert_eq!(credit_line.credit_limit, 2000);
         assert_eq!(credit_line.interest_rate_bps, 400);
         assert_eq!(credit_line.risk_score, 75);
+    }
+
+    #[test]
+    fn test_repay_credit_transfers_token_and_consumes_allowance() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let borrower = Address::generate(&env);
+
+        let contract_id = env.register(Credit, ());
+        let client = CreditClient::new(&env, &contract_id);
+
+        client.init(&admin);
+        client.open_credit_line(&borrower, &1000_i128, &300_u32, &70_u32);
+
+        let token = env.register_stellar_asset_contract_v2(admin.clone());
+        let token_id = token.address();
+        let token_client = TokenClient::new(&env, &token_id);
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        token_admin_client.mint(&borrower, &1_000_i128);
+        client.set_protocol_token(&token_id);
+
+        let expiration_ledger = 1_000_u32;
+        token_client.approve(&borrower, &contract_id, &600_i128, &expiration_ledger);
+
+        let borrower_balance_before = token_client.balance(&borrower);
+        let contract_balance_before = token_client.balance(&contract_id);
+        let allowance_before = token_client.allowance(&borrower, &contract_id);
+
+        client.repay_credit(&borrower, &200_i128);
+
+        assert_eq!(
+            token_client.balance(&borrower),
+            borrower_balance_before - 200
+        );
+        assert_eq!(
+            token_client.balance(&contract_id),
+            contract_balance_before + 200
+        );
+        assert_eq!(
+            token_client.allowance(&borrower, &contract_id),
+            allowance_before - 200
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Insufficient allowance")]
+    fn test_repay_credit_reverts_on_insufficient_allowance() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let borrower = Address::generate(&env);
+
+        let contract_id = env.register(Credit, ());
+        let client = CreditClient::new(&env, &contract_id);
+
+        client.init(&admin);
+        client.open_credit_line(&borrower, &1000_i128, &300_u32, &70_u32);
+
+        let token = env.register_stellar_asset_contract_v2(admin.clone());
+        let token_id = token.address();
+        let token_client = TokenClient::new(&env, &token_id);
+        let token_admin_client = StellarAssetClient::new(&env, &token_id);
+
+        token_admin_client.mint(&borrower, &1_000_i128);
+        client.set_protocol_token(&token_id);
+
+        let expiration_ledger = 1_000_u32;
+        token_client.approve(&borrower, &contract_id, &100_i128, &expiration_ledger);
+
+        client.repay_credit(&borrower, &200_i128);
     }
 
     #[test]
@@ -387,7 +548,7 @@ mod test {
     fn test_multiple_borrowers() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let admin = Address::generate(&env);
         let borrower1 = Address::generate(&env);
         let borrower2 = Address::generate(&env);
@@ -412,7 +573,7 @@ mod test {
     fn test_lifecycle_transitions() {
         let env = Env::default();
         env.mock_all_auths();
-        
+
         let admin = Address::generate(&env);
         let borrower = Address::generate(&env);
 
