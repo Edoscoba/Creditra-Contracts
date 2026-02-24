@@ -39,11 +39,11 @@ pub struct Credit;
 #[contractimpl]
 impl Credit {
     /// Initialize the contract (admin).
-    pub fn init(env: Env, admin: Address) -> () {
+    pub fn init(env: Env, admin: Address) {
         env.storage()
             .instance()
             .set(&Symbol::new(&env, "admin"), &admin);
-        ()
+        
     }
 
     /// Open a new credit line for a borrower (called by backend/risk engine).
@@ -68,7 +68,7 @@ impl Credit {
         credit_limit: i128,
         interest_rate_bps: u32,
         risk_score: u32,
-    ) -> () {
+    ) {
         assert!(credit_limit > 0, "credit_limit must be greater than zero");
         assert!(
             interest_rate_bps <= 10_000,
@@ -111,12 +111,12 @@ impl Credit {
                 risk_score,
             },
         );
-        ()
+        
     }
 
     /// Draw from credit line (borrower).
     /// Reverts if credit line does not exist, is Closed, or borrower has not authorized.
-    pub fn draw_credit(env: Env, borrower: Address, amount: i128) -> () {
+    pub fn draw_credit(env: Env, borrower: Address, amount: i128) {
         borrower.require_auth();
         let mut credit_line: CreditLineData = env
             .storage()
@@ -139,12 +139,12 @@ impl Credit {
         credit_line.utilized_amount = new_utilized;
         env.storage().persistent().set(&borrower, &credit_line);
         // TODO: transfer token to borrower
-        ()
+        
     }
 
     /// Repay credit (borrower).
     /// Reverts if credit line does not exist, is Closed, or borrower has not authorized.
-    pub fn repay_credit(env: Env, borrower: Address, _amount: i128) -> () {
+    pub fn repay_credit(env: Env, borrower: Address, _amount: i128) {
         borrower.require_auth();
         let credit_line: CreditLineData = env
             .storage()
@@ -155,7 +155,7 @@ impl Credit {
             panic!("credit line is closed");
         }
         // TODO: accept token, reduce utilized_amount, accrue interest
-        ()
+        
     }
 
     /// Update risk parameters (admin/risk engine).
@@ -165,14 +165,14 @@ impl Credit {
         _credit_limit: i128,
         _interest_rate_bps: u32,
         _risk_score: u32,
-    ) -> () {
+    ) {
         // TODO: update stored CreditLineData
-        ()
+        
     }
 
     /// Suspend a credit line (admin).
     /// Emits a CreditLineSuspended event.
-    pub fn suspend_credit_line(env: Env, borrower: Address) -> () {
+    pub fn suspend_credit_line(env: Env, borrower: Address) {
         let mut credit_line: CreditLineData = env
             .storage()
             .persistent()
@@ -194,7 +194,7 @@ impl Credit {
                 risk_score: credit_line.risk_score,
             },
         );
-        ()
+        
     }
 
     /// Close a credit line. Callable by admin (force-close) or by borrower when utilization is zero.
@@ -209,7 +209,7 @@ impl Credit {
     ///   borrower closes while `utilized_amount != 0`.
     ///
     /// Emits a CreditLineClosed event.
-    pub fn close_credit_line(env: Env, borrower: Address, closer: Address) -> () {
+    pub fn close_credit_line(env: Env, borrower: Address, closer: Address) {
         closer.require_auth();
 
         let admin: Address = env
@@ -225,7 +225,7 @@ impl Credit {
             .expect("Credit line not found");
 
         if credit_line.status == CreditStatus::Closed {
-            return ();
+            return;
         }
 
         let allowed = closer == admin || (closer == borrower && credit_line.utilized_amount == 0);
@@ -251,12 +251,12 @@ impl Credit {
                 risk_score: credit_line.risk_score,
             },
         );
-        ()
+        
     }
 
     /// Mark a credit line as defaulted (admin).
     /// Emits a CreditLineDefaulted event.
-    pub fn default_credit_line(env: Env, borrower: Address) -> () {
+    pub fn default_credit_line(env: Env, borrower: Address) {
         let mut credit_line: CreditLineData = env
             .storage()
             .persistent()
@@ -278,7 +278,7 @@ impl Credit {
                 risk_score: credit_line.risk_score,
             },
         );
-        ()
+        
     }
 
     /// Get credit line data for a borrower (view function).
