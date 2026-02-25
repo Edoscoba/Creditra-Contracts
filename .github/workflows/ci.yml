@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, master, develop, 'feature/**']
+    branches: [main, master, develop, "feature/**"]
   pull_request:
     branches: [main, master, develop]
 
@@ -44,6 +44,9 @@ jobs:
 
       - name: Lint (clippy)
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build --release
 
       - name: Test
         run: cargo test --workspace
@@ -105,3 +108,11 @@ jobs:
 
       - name: Build contract (WASM)
         run: cargo build --release --target wasm32-unknown-unknown -p creditra-credit
+
+      - name: Report WASM size
+        run: |
+          WASM_PATH="target/wasm32-unknown-unknown/release/creditra_credit.wasm"
+          if [ -f "$WASM_PATH" ]; then
+            SIZE_BYTES=$(stat -c%s "$WASM_PATH")
+            echo "WASM size: $SIZE_BYTES bytes ($((SIZE_BYTES / 1024)) KB)"
+          fi
