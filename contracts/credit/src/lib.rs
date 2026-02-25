@@ -81,7 +81,6 @@ impl Credit {
         env.storage().instance().set(&token_key(&env), &token);
     }
 
-
     /// Open a new credit line for a borrower (called by backend/risk engine).
     ///
     /// # Panics
@@ -1193,9 +1192,7 @@ mod test {
         client.suspend_credit_line(&borrower);
 
         client.draw_credit(&borrower, &100_i128);
-
     }
-
 
     // ── reentrancy guard ──────────────────────────────────────────────────────
 
