@@ -373,6 +373,10 @@ impl Credit {
         );
     }
 
+    /// Read-only getter for credit line by borrower
+    ///
+    /// @param borrower The address to query
+    /// @return Option<CreditLineData> Full data or None if no line exists
     /// Get credit line data for a borrower (view function).
     pub fn get_credit_line(env: Env, borrower: Address) -> Option<CreditLineData> {
         env.storage().persistent().get(&borrower)
