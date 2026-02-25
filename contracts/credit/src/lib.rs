@@ -11,7 +11,7 @@
 mod events;
 mod types;
 
-use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env, Symbol};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Symbol};
 
 use events::{
     publish_credit_line_event, publish_repayment_event, publish_risk_parameters_updated,
@@ -37,6 +37,22 @@ fn require_admin(env: &Env) -> Address {
         .instance()
         .get(&admin_key(env))
         .expect("admin not set")
+}
+
+#[contracttype]
+#[derive(Debug, Clone, PartialEq)]
+pub enum CreditError {
+    CreditLineNotFound = 1,
+    InvalidCreditStatus = 2,
+    InvalidAmount = 3,
+    InsufficientUtilization = 4,
+    Unauthorized = 5,
+}
+
+impl Into<soroban_sdk::Error> for CreditError {
+    fn into(self) -> soroban_sdk::Error {
+        soroban_sdk::Error::from_contract_error(self as u32)
+    }
 }
 
 fn require_admin_auth(env: &Env) -> Address {
@@ -137,7 +153,6 @@ impl Credit {
         );
     }
 
-    /// Draw from credit line (borrower).
     /// Reverts if credit line does not exist, is Closed, or borrower has not authorized.
     pub fn draw_credit(env: Env, borrower: Address, amount: i128) {
         set_reentrancy_guard(&env);
@@ -390,6 +405,38 @@ mod test {
     use soroban_sdk::testutils::Events;
     use soroban_sdk::{TryFromVal, TryIntoVal};
 
+    /// Helper function to set up test environment with admin, borrower, and contract
+    fn setup_test(env: &Env) -> (Address, Address, Address) {
+        let admin = Address::generate(env);
+        let borrower = Address::generate(env);
+        let contract_id = env.register(Credit, ());
+        let client = CreditClient::new(env, &contract_id);
+
+        env.mock_all_auths();
+
+        client.init(&admin);
+        client.open_credit_line(&borrower, &1000_i128, &300_u32, &70_u32);
+
+        (admin, borrower, contract_id)
+    }
+
+    /// Helper function to call contract methods within contract context
+    fn call_contract<F>(env: &Env, contract_id: &Address, f: F)
+    where
+        F: FnOnce(),
+    {
+        env.mock_all_auths();
+        env.as_contract(contract_id, f);
+    }
+
+    /// Helper function to get credit line data
+    fn get_credit_data(env: &Env, contract_id: &Address, borrower: &Address) -> CreditLineData {
+        env.as_contract(contract_id, || {
+            Credit::get_credit_line(env.clone(), borrower.clone())
+                .expect("Credit line should exist")
+        })
+    }
+
     #[test]
     fn test_init_and_open_credit_line() {
         let env = Env::default();
@@ -470,6 +517,154 @@ mod test {
 
         let credit_line = client.get_credit_line(&borrower).unwrap();
         assert_eq!(credit_line.status, CreditStatus::Defaulted);
+    }
+
+    #[test]
+    fn test_draw_credit() {
+        let env = Env::default();
+        let (_admin, borrower, contract_id) = setup_test(&env);
+
+        call_contract(&env, &contract_id, || {
+            Credit::draw_credit(env.clone(), borrower.clone(), 500_i128);
+        });
+
+        let credit_data = get_credit_data(&env, &contract_id, &borrower);
+        assert_eq!(credit_data.utilized_amount, 500_i128);
+
+        // Events are emitted - functionality verified through storage changes
+    }
+
+    #[test]
+    fn test_repay_credit_partial() {
+        let env = Env::default();
+        let (_admin, borrower, contract_id) = setup_test(&env);
+
+        // First draw some credit
+        call_contract(&env, &contract_id, || {
+            Credit::draw_credit(env.clone(), borrower.clone(), 500_i128);
+        });
+        assert_eq!(
+            get_credit_data(&env, &contract_id, &borrower).utilized_amount,
+            500_i128
+        );
+
+        // Partial repayment
+        call_contract(&env, &contract_id, || {
+            Credit::repay_credit(env.clone(), borrower.clone(), 200_i128);
+        });
+
+        let credit_data = get_credit_data(&env, &contract_id, &borrower);
+        assert_eq!(credit_data.utilized_amount, 300_i128); // 500 - 200
+    }
+
+    #[test]
+    fn test_repay_credit_full() {
+        let env = Env::default();
+        let (_admin, borrower, contract_id) = setup_test(&env);
+
+        // Draw some credit
+        call_contract(&env, &contract_id, || {
+            Credit::draw_credit(env.clone(), borrower.clone(), 500_i128);
+        });
+        assert_eq!(
+            get_credit_data(&env, &contract_id, &borrower).utilized_amount,
+            500_i128
+        );
+
+        // Full repayment
+        call_contract(&env, &contract_id, || {
+            Credit::repay_credit(env.clone(), borrower.clone(), 500_i128);
+        });
+
+        let credit_data = get_credit_data(&env, &contract_id, &borrower);
+        assert_eq!(credit_data.utilized_amount, 0_i128); // Fully repaid
+    }
+
+    #[test]
+    fn test_repay_credit_overpayment() {
+        let env = Env::default();
+        let (_admin, borrower, contract_id) = setup_test(&env);
+
+        // Draw some credit
+        call_contract(&env, &contract_id, || {
+            Credit::draw_credit(env.clone(), borrower.clone(), 300_i128);
+        });
+        assert_eq!(
+            get_credit_data(&env, &contract_id, &borrower).utilized_amount,
+            300_i128
+        );
+
+        // Overpayment (pay more than utilized)
+        call_contract(&env, &contract_id, || {
+            Credit::repay_credit(env.clone(), borrower.clone(), 500_i128);
+        });
+
+        let credit_data = get_credit_data(&env, &contract_id, &borrower);
+        assert_eq!(credit_data.utilized_amount, 0_i128); // Should be capped at 0
+    }
+
+    #[test]
+    fn test_repay_credit_zero_utilization() {
+        let env = Env::default();
+        let (_admin, borrower, contract_id) = setup_test(&env);
+
+        // Try to repay when no credit is utilized
+        call_contract(&env, &contract_id, || {
+            Credit::repay_credit(env.clone(), borrower.clone(), 100_i128);
+        });
+
+        let credit_data = get_credit_data(&env, &contract_id, &borrower);
+        assert_eq!(credit_data.utilized_amount, 0_i128); // Should remain 0
+    }
+
+    #[test]
+    fn test_repay_credit_suspended_status() {
+        let env = Env::default();
+        let (_admin, borrower, contract_id) = setup_test(&env);
+
+        // Draw some credit
+        call_contract(&env, &contract_id, || {
+            Credit::draw_credit(env.clone(), borrower.clone(), 500_i128);
+        });
+
+        // Manually set status to Suspended
+        let mut credit_data = get_credit_data(&env, &contract_id, &borrower);
+        credit_data.status = CreditStatus::Suspended;
+        env.as_contract(&contract_id, || {
+            env.storage().persistent().set(&borrower, &credit_data);
+        });
+
+        // Should be able to repay even when suspended
+        call_contract(&env, &contract_id, || {
+            Credit::repay_credit(env.clone(), borrower.clone(), 200_i128);
+        });
+
+        let updated_data = get_credit_data(&env, &contract_id, &borrower);
+        assert_eq!(updated_data.utilized_amount, 300_i128);
+        assert_eq!(updated_data.status, CreditStatus::Suspended); // Status should remain Suspended
+    }
+
+    #[test]
+    #[should_panic(expected = "amount must be positive")]
+    fn test_repay_credit_invalid_amount_zero() {
+        let env = Env::default();
+        let (_admin, borrower, contract_id) = setup_test(&env);
+
+        call_contract(&env, &contract_id, || {
+            Credit::repay_credit(env.clone(), borrower.clone(), 0_i128);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "amount must be positive")]
+    fn test_repay_credit_invalid_amount_negative() {
+        let env = Env::default();
+        let (_admin, borrower, contract_id) = setup_test(&env);
+
+        let negative_amount: i128 = -100;
+        call_contract(&env, &contract_id, || {
+            Credit::repay_credit(env.clone(), borrower.clone(), negative_amount);
+        });
     }
 
     #[test]
