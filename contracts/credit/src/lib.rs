@@ -291,7 +291,10 @@ impl Credit {
             amount
         };
 
-        let new_utilized = credit_line.utilized_amount.saturating_sub(repay_amount).max(0);
+        let new_utilized = credit_line
+            .utilized_amount
+            .saturating_sub(repay_amount)
+            .max(0);
         credit_line.utilized_amount = new_utilized;
         env.storage().persistent().set(&borrower, &credit_line);
 
@@ -1605,7 +1608,13 @@ mod test {
         token_admin_client.mint(&borrower, &300_i128);
 
         let repay_amount = 200_i128;
-        approve_token_spend(&env, &token.address(), &borrower, &contract_id, repay_amount);
+        approve_token_spend(
+            &env,
+            &token.address(),
+            &borrower,
+            &contract_id,
+            repay_amount,
+        );
 
         let borrower_balance_before = token_client.balance(&borrower);
         let reserve_balance_before = token_client.balance(&contract_id);
@@ -1617,7 +1626,10 @@ mod test {
         let reserve_balance_after = token_client.balance(&contract_id);
         let allowance_after = token_client.allowance(&borrower, &contract_id);
 
-        assert_eq!(borrower_balance_before - borrower_balance_after, repay_amount);
+        assert_eq!(
+            borrower_balance_before - borrower_balance_after,
+            repay_amount
+        );
         assert_eq!(reserve_balance_after - reserve_balance_before, repay_amount);
         assert_eq!(allowance_before - allowance_after, repay_amount);
         assert_eq!(
@@ -1655,7 +1667,13 @@ mod test {
         token_admin_client.mint(&borrower, &250_i128);
 
         let repay_amount = 100_i128;
-        approve_token_spend(&env, &token.address(), &borrower, &contract_id, repay_amount);
+        approve_token_spend(
+            &env,
+            &token.address(),
+            &borrower,
+            &contract_id,
+            repay_amount,
+        );
 
         let borrower_balance_before = token_client.balance(&borrower);
         let reserve_balance_before = token_client.balance(&reserve);
